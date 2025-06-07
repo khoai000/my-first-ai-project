@@ -13,3 +13,11 @@ venv/Scripts/activate
 - macOS/Linux:
 
 source venv/bin/activate
+
+3. Cài đặt môi trường:
+
+- pip install -r requirements.txt
+
+4. Chạy app:
+
+- streamlit run app.py
