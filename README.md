@@ -1,8 +1,9 @@
 # gen-ai-sample
 
-1. Tạo môi trường ảo:
-python -m venv venv
+python đang chạy: 3.11.13
 
+1. Tạo môi trường ảo:
+   python -m venv venv
 
 2. Kích hoạt môi trường ảo:
 
@@ -17,6 +18,8 @@ source venv/bin/activate
 3. Cài đặt môi trường:
 
 - pip install -r requirements.txt
+
+- python download_model.py
 
 4. Chạy app:
 
