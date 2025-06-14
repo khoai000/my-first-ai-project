@@ -57,12 +57,19 @@ if 'initial_faiss_error_toast_shown' not in st.session_state:
 # --- ĐẶT ĐƯỜNG DẪN CỤC BỘ MỘT CÁCH VỮNG CHẮC Ở ĐÂY ---
 current_script_directory = os.path.dirname(os.path.abspath(__file__))
 local_embedding_model_path = os.path.join(current_script_directory, "local_models", "multilingual-e5-large")
+REMOTE_EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-large"
 
 
 # --- Hàm tải Embedding Model (chỉ chứa logic tính toán, không có lệnh Streamlit UI) ---
 @st.cache_resource
-def _get_huggingface_embeddings_pure(local_model_path: str):
+def _get_huggingface_embeddings_pure(local_model_path: str, is_local_path: bool):
     try:
+        if is_local_path and not (os.path.exists(local_model_path) and
+                                 (os.path.exists(os.path.join(local_model_path, 'pytorch_model.bin')) or
+                                  os.path.exists(os.path.join(local_model_path, 'model.safetensors')) or
+                                  os.path.exists(os.path.join(local_model_path, 'config.json')))):
+            return None, "load_error:Local model path provided but no valid model files found."
+
         embed_model = HuggingFaceEmbeddings(
             model_name=local_model_path,
             model_kwargs={'device': 'cpu'}
@@ -75,24 +82,37 @@ def _get_huggingface_embeddings_pure(local_model_path: str):
 if "embeddings_object" not in st.session_state:
     st.session_state.embeddings_object = None
 
+# --- Logic tải mô hình Embedding khi khởi động ứng dụng ---
+# Chỉ tải khi chưa có trong session_state
 if st.session_state.embeddings_object is None:
-    with st.spinner(f"Đang tải mô hình Embedding từ '{os.path.basename(local_embedding_model_path)}'..."):
-        embed_model_result, status = _get_huggingface_embeddings_pure(local_embedding_model_path)
+    # 1. Thử tải từ cục bộ trước
+    with st.spinner(f"Đang kiểm tra và tải mô hình Embedding từ cục bộ ({local_embedding_model_path})..."):
+        embed_model_result, status = _get_huggingface_embeddings_pure(local_embedding_model_path, is_local_path=True)
 
-    st.session_state.embeddings_object = embed_model_result
-
-    if status == "loaded_successfully":
+    if embed_model_result:
+        st.session_state.embeddings_object = embed_model_result
         if not st.session_state.initial_embed_toast_shown:
-            st.toast(f"Mô hình Embedding từ '{os.path.basename(local_embedding_model_path)}' đã được tải thành công!", icon="✅")
+            st.toast(f"Mô hình Embedding đã được tải thành công từ cục bộ!", icon="✅")
             st.session_state.initial_embed_toast_shown = True
-    elif status.startswith("load_error"):
-        error_message = status.split(":", 1)[1]
-        if not st.session_state.initial_embed_error_toast_shown:
-            st.error(f"Lỗi khi khởi tạo HuggingFaceEmbeddings từ đường dẫn cục bộ '{local_embedding_model_path}': {error_message}. Vui lòng kiểm tra xem mô hình đã được tải xuống đầy đủ và đúng vị trí chưa.")
-            st.session_state.initial_embed_error_toast_shown = True
+    else: 
+        # 2. Thử tải từ Internet
+        with st.spinner(f"Không tìm thấy mô hình cục bộ. Đang thử tải từ Internet ({REMOTE_EMBEDDING_MODEL_NAME})..."):
+            st.toast(f"Mô hình Embedding cục bộ không tìm thấy. Đang thử tải từ Internet ({REMOTE_EMBEDDING_MODEL_NAME})...", icon="🌐")
+            embed_model_result, status = _get_huggingface_embeddings_pure(REMOTE_EMBEDDING_MODEL_NAME, is_local_path=False)
+
+        if embed_model_result:
+            st.session_state.embeddings_object = embed_model_result
+            if not st.session_state.initial_embed_toast_shown:
+                st.toast(f"Mô hình Embedding đã được tải thành công từ Internet!", icon="✅")
+                st.session_state.initial_embed_toast_shown = True
+        else: 
+            if not st.session_state.initial_embed_error_toast_shown:
+                error_message = status.split(":", 1)[1] if ":" in status else status
+                st.error(f"Lỗi khi tải mô hình Embedding: {error_message}. Vui lòng kiểm tra kết nối Internet hoặc đường dẫn mô hình.")
+                st.session_state.initial_embed_error_toast_shown = True
+            st.stop()
 
 embeddings = st.session_state.embeddings_object
-
 
 # --- Cấu hình đường dẫn lưu FAISS index ---
 FAISS_PATH = "faiss_index_data_multilingual"
