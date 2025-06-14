@@ -4,3 +4,10 @@ langchain-community==0.3.19
 langchain-core==0.3.45
 langchain-groq==0.2.5
 python-dotenv>=1.0.1
+streamlit-option-menu
+sentence-transformers
+unstructured
+pypdf 
+openpyxl
+python-docx
+faiss-cpu

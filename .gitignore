@@ -126,3 +126,5 @@ jupyter_dev/
 *.pdf
 chromedriver
 scripts/
+
+/local_models/multilingual-e5-large/
