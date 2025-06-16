@@ -2,8 +2,9 @@ import os
 from huggingface_hub import snapshot_download
 
 # Định nghĩa tên mô hình và đường dẫn lưu cục bộ
-model_name = "intfloat/multilingual-e5-large"
-local_model_path = "./local_models/multilingual-e5-large" # Thư mục bạn muốn lưu
+# model_name = "intfloat/multilingual-e5-large"
+model_name = "bkai-foundation-models/vietnamese-bi-encoder"
+local_model_path = "./local_models/vietnamese-bi-encoder"
 
 # Tạo thư mục nếu nó chưa tồn tại
 os.makedirs(local_model_path, exist_ok=True)
