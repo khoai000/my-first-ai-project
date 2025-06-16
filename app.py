@@ -14,7 +14,7 @@ from langchain.chains import create_retrieval_chain
 
 load_dotenv()
 
-# --- LỆNH st.set_page_config() PHẢI LÀ LỆNH STREAMLIT ĐẦU TIÊN TRONG SCRIPT! ---
+# --- LÊN TRONGỆNH st.set_page_config() PHẢI LÀ LỆNH STREAMLIT ĐẦU TI SCRIPT! ---
 st.set_page_config(page_title="🤖 Chatbot AI", layout="wide")
 
 

@@ -19,7 +19,7 @@ source venv/bin/activate
 
 - pip install -r requirements.txt
 
-- python download_model.py <option>
+- python download_model.py --option--
 
 4. Chạy app:
 
