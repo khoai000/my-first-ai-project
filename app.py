@@ -57,8 +57,8 @@ if 'initial_faiss_error_toast_shown' not in st.session_state:
 # --- ĐẶT ĐƯỜNG DẪN CỤC BỘ MỘT CÁCH VỮNG CHẮC Ở ĐÂY ---
 current_script_directory = os.path.dirname(os.path.abspath(__file__))
 local_embedding_model_path = os.path.join(current_script_directory, "local_models", "vietnamese-bi-encoder")
-# REMOTE_EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-large"
-REMOTE_EMBEDDING_MODEL_NAME = "bkai-foundation-models/vietnamese-bi-encoder"
+REMOTE_EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-large"
+# REMOTE_EMBEDDING_MODEL_NAME = "bkai-foundation-models/vietnamese-bi-encoder"
 
 
 # --- Hàm tải Embedding Model (chỉ chứa logic tính toán, không có lệnh Streamlit UI) ---
