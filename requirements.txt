@@ -12,4 +12,4 @@ python-docx
 pandas
 regex
 sentence-transformers
-faiss-gpu
+faiss-cpu
