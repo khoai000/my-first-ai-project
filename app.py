@@ -14,7 +14,6 @@ from langchain.chains import create_retrieval_chain
 from langchain_core.prompts import ChatPromptTemplate
 import pandas as pd
 from datetime import datetime
-import math
 import re
 
 load_dotenv()
