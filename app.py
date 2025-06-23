@@ -254,6 +254,8 @@ def handleCheck(llm_model, vector_store):
                 if text_matches or date_matches:
                     new_record = [stt, doc_title, found_date_str_in_title if found_date_str_in_title is not None else "", status if status is not None else ""]
                     results.append(new_record)
+            print("results", results)
+            print("response[]", response["answer"])
             return results
         except Exception as e:
             return f"Lỗi khi thực hiện kiểm tra: {str(e)}"
@@ -340,16 +342,18 @@ elif selected == "Quản lý dữ liệu":
         help="Tải lên tài liệu của bạn để chatbot có thể trả lời các câu hỏi dựa trên nội dung đó. Việc tải file mới sẽ ghi đè dữ liệu cũ."
     )
 
+    if 'file_uploaded' not in st.session_state:
+        st.session_state.file_uploaded = False
+
     if 'last_processed_file_info' not in st.session_state:
         st.session_state.last_processed_file_info = None
 
-    if uploaded_file:
+    if uploaded_file is not None:
         current_file_info = (uploaded_file.name, uploaded_file.size)
         if current_file_info != st.session_state.last_processed_file_info:
             if embeddings is None:
                 st.error("Không thể xử lý tài liệu vì mô hình Embedding không khả dụng. Vui lòng kiểm tra các thông báo lỗi trên cùng.")
             else:
-                # Tạo một thư mục tạm thời để lưu file
                 import tempfile
                 import shutil
                 temp_dir = tempfile.mkdtemp()
@@ -389,6 +393,7 @@ elif selected == "Quản lý dữ liệu":
 
                         st.success(f"Tài liệu đã được xử lý.")
                         st.session_state.last_processed_file_info = current_file_info
+                        st.session_state.file_uploaded = True
 
                         # Reset các cờ trạng thái để thông báo FAISS có thể hiển thị lại nếu cần
                         st.session_state.initial_faiss_loaded_toast_shown = False
@@ -404,6 +409,8 @@ elif selected == "Quản lý dữ liệu":
                             shutil.rmtree(temp_dir)
         else:
             st.session_state.last_processed_file_info = None
+    else:
+        st.session_state.file_uploaded = False
 
     st.markdown("---")
     st.subheader("Trạng thái dữ liệu hiện tại:")
@@ -434,14 +441,17 @@ elif selected == "Quản lý dữ liệu":
     if 'docs_check_result' not in st.session_state:
         st.session_state.docs_check_result = ""
     
-    if st.button("Thực hiện Kiểm tra"):
-        canchu_check_result_placeholder = st.empty()
-        with st.spinner("Đang thực hiện kiểm tra"):
-            result_for_button = handleCheck(
-                chat,
-                st.session_state.vector_store
-            )
-            st.session_state.docs_check_result = result_for_button
+    if st.session_state.vector_store:
+        if st.button("Kiểm tra", key="check_button"):
+            with st.spinner("Đang thực hiện kiểm tra..."):
+                result_for_button = handleCheck(
+                    chat,
+                    st.session_state.vector_store
+                )
+                st.session_state.docs_check_result = result_for_button
+    else:
+        st.warning("Vui lòng tải lên tệp tài liệu trước khi thực hiện kiểm tra.")
+
     
     if st.session_state.docs_check_result:
         columns = ["STT", "Tên văn bản", "Ngày phát hành", "Trạng thái"]
