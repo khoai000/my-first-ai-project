@@ -11,3 +11,4 @@ openpyxl
 python-docx
 pandas
 regex
+sentence-transformers
