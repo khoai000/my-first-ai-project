@@ -5,7 +5,6 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.prompts import PromptTemplate
 from dotenv import load_dotenv
 from streamlit_option_menu import option_menu
-
 from langchain_community.document_loaders import PyPDFLoader, UnstructuredWordDocumentLoader, UnstructuredExcelLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -13,13 +12,15 @@ from langchain_community.vectorstores import FAISS
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.chains import create_retrieval_chain
 from langchain_core.prompts import ChatPromptTemplate
+import pandas as pd
+from datetime import datetime
+import math
+import re
 
 load_dotenv()
 
-# --- CẤU HÌNH TRANG STREAMLIT ---
 st.set_page_config(page_title="🤖 Chatbot AI", layout="wide")
 
-# --- Khởi tạo GenAI client ---
 genai_api_key = os.getenv('GOOGLE_API_KEY')
 if not genai_api_key:
     st.error("GOOGLE_API_KEY không được tìm thấy trong file .env. Vui lòng thêm khóa API của Gemini.")
@@ -33,15 +34,13 @@ chat = ChatGoogleGenerativeAI(
     google_api_key=genai_api_key,
     convert_system_message_to_human=True
 )
-
-# Template chính cho RAG (sử dụng cả context và input)
 PROMPT_TEMPLATE = """
-Bạn là một trợ lý AI hữu ích. Hãy trả lời câu hỏi sau bằng tiếng Việt một cách rõ ràng và chính xác.
-Sử dụng các đoạn ngữ cảnh được cung cấp để trả lời câu hỏi. Nếu bạn không biết câu trả lời, hãy nói rằng bạn không biết, đừng cố bịa ra câu trả lời.
+    Bạn là một trợ lý AI hữu ích. Hãy trả lời câu hỏi sau bằng tiếng Việt một cách rõ ràng và chính xác.
+    Sử dụng các đoạn ngữ cảnh được cung cấp để trả lời câu hỏi. Nếu bạn không biết câu trả lời, hãy nói rằng bạn không biết, đừng cố bịa ra câu trả lời.
 
-Ngữ cảnh:
-{context}
-"""
+    Ngữ cảnh:
+    {context}
+    """
 rag_prompt = ChatPromptTemplate.from_messages([
     ("system", PROMPT_TEMPLATE),
     ("human", "{input}")
@@ -61,28 +60,6 @@ if 'initial_faiss_error_toast_shown' not in st.session_state:
     st.session_state.initial_faiss_error_toast_shown = False
 if 'initial_faiss_load_attempted' not in st.session_state:
     st.session_state.initial_faiss_load_attempted = False
-
-# Cờ cho Base Document FAISS (MỚI)
-if 'initial_base_faiss_loaded_toast_shown' not in st.session_state:
-    st.session_state.initial_base_faiss_loaded_toast_shown = False
-if 'initial_base_faiss_not_found_toast_shown' not in st.session_state:
-    st.session_state.initial_base_faiss_not_found_toast_shown = False
-if 'initial_base_faiss_error_toast_shown' not in st.session_state:
-    st.session_state.initial_base_faiss_error_toast_shown = False
-if 'initial_base_faiss_load_attempted' not in st.session_state:
-    st.session_state.initial_base_faiss_load_attempted = False
-# Cờ cho Evaluation Document FAISS (MỚI)
-if 'initial_eval_faiss_loaded_toast_shown' not in st.session_state:
-    st.session_state.initial_eval_faiss_loaded_toast_shown = False
-if 'initial_eval_faiss_not_found_toast_shown' not in st.session_state:
-    st.session_state.initial_eval_faiss_not_found_toast_shown = False
-if 'initial_eval_faiss_error_toast_shown' not in st.session_state:
-    st.session_state.initial_eval_faiss_error_toast_shown = False
-if 'initial_eval_faiss_load_attempted' not in st.session_state:
-    st.session_state.initial_eval_faiss_load_attempted = False
-
-if "check_button_pressed" not in st.session_state:
-    st.session_state.check_button_pressed = False
 
 
 # --- ĐẶT ĐƯỜNG DẪN CỤC BỘ ---
@@ -105,7 +82,7 @@ def get_huggingface_embeddings_model(model_path: str, is_local: bool):
 
         embed_model = HuggingFaceEmbeddings(
             model_name=model_path,
-            model_kwargs={'device': 'cpu'} # Có thể đổi thành 'cuda' nếu có GPU
+            model_kwargs={'device': 'cpu'}
         )
         return embed_model, "loaded_successfully"
     except Exception as e:
@@ -134,7 +111,6 @@ if "embeddings_object" not in st.session_state or st.session_state.embeddings_ob
                 st.toast(f"Mô hình Embedding đã được tải thành công từ Internet!", icon="✅")
                 st.session_state.initial_embed_toast_shown = True
         else:
-            # Nếu cả hai cách đều lỗi
             if not st.session_state.initial_embed_error_toast_shown:
                 error_message = status.split(":", 1)[1] if ":" in status else status
                 st.error(f"Lỗi khi tải mô hình Embedding: {error_message}. Vui lòng kiểm tra kết nối Internet hoặc đường dẫn mô hình.")
@@ -143,23 +119,22 @@ if "embeddings_object" not in st.session_state or st.session_state.embeddings_ob
 
 embeddings = st.session_state.embeddings_object
 
-BASE_FAISS_PATH = "faiss_index_base_docs" 
-EVAL_FAISS_PATH = "faiss_index_eval_docs"
+# --- Cấu hình đường dẫn lưu FAISS index ---
+FAISS_PATH = "faiss_index_data_multilingual"
+if not os.path.exists(FAISS_PATH):
+    os.makedirs(FAISS_PATH)
 
-if not os.path.exists(BASE_FAISS_PATH):
-    os.makedirs(BASE_FAISS_PATH)
-if not os.path.exists(EVAL_FAISS_PATH): # MỚI
-    os.makedirs(EVAL_FAISS_PATH)
-
-if "base_vector_store" not in st.session_state: 
-    st.session_state.base_vector_store = None
-if "eval_vector_store" not in st.session_state: 
-    st.session_state.eval_vector_store = None
+# --- Quản lý FAISS Vector Store trong session state ---
+if "vector_store" not in st.session_state:
+    st.session_state.vector_store = None
+if "processing_done" not in st.session_state:
+    st.session_state.processing_done = False
 
 
+# --- Hàm tải FAISS index (KHÔNG DÙNG @st.cache_resource) ---
 # Hàm này chỉ chứa logic tải/kiểm tra, không có lệnh Streamlit UI
 def load_faiss_index_from_disk(path, embeddings_obj):
-    if embeddings_obj is None:
+    if embeddings_obj is None: # Đảm bảo embeddings đã sẵn sàng
         return None, "embeddings_not_ready"
 
     if os.path.exists(path) and os.listdir(path):
@@ -175,178 +150,116 @@ def load_faiss_index_from_disk(path, embeddings_obj):
     else:
         return None, "not_found"
 
-# --- Hàm xử lý file upload ---
-def process_uploaded_file(uploaded_file, faiss_path, vector_store_key, doc_type_name):
-    if embeddings is None:
-        st.error("Không thể xử lý tài liệu vì mô hình Embedding không khả dụng. Vui lòng kiểm tra các thông báo lỗi trên cùng.")
-        return False
-
-    import tempfile
-    import shutil
-    temp_dir = tempfile.mkdtemp()
-    temp_file_path = os.path.join(temp_dir, uploaded_file.name)
-
-    with st.spinner("Đang xử lý tài liệu... Vui lòng chờ trong giây lát."):
-        try:
-            file_extension = uploaded_file.name.split(".")[-1].lower()
-
-            with open(temp_file_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-
-            docs = []
-            if file_extension == "pdf":
-                loader = PyPDFLoader(temp_file_path)
-                docs = loader.load()
-            elif file_extension == "docx":
-                loader = UnstructuredWordDocumentLoader(temp_file_path)
-                docs = loader.load()
-            elif file_extension == "xlsx":
-                loader = UnstructuredExcelLoader(temp_file_path)
-                docs = loader.load()
-            else:
-                st.error("Định dạng file không được hỗ trợ. Vui lòng tải lên file PDF, DOCX, hoặc XLSX.")
-                shutil.rmtree(temp_dir)
-                return False
-
-            text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=1000,
-                chunk_overlap=200
-            )
-            splits = text_splitter.split_documents(docs)
-
-            new_vector_store = FAISS.from_documents(splits, embeddings)
-            new_vector_store.save_local(faiss_path)
-            st.session_state[vector_store_key] = new_vector_store
-
-            st.success(f"Tài liệu '{doc_type_name}' đã được xử lý")
-
-            # Reset các cờ trạng thái FAISS của loại tài liệu này
-            if vector_store_key == "base_vector_store":
-                st.session_state.initial_base_faiss_loaded_toast_shown = False
-                st.session_state.initial_base_faiss_not_found_toast_shown = False
-                st.session_state.initial_base_faiss_error_toast_shown = False
-                st.session_state.initial_base_faiss_load_attempted = False
-            elif vector_store_key == "eval_vector_store":
-                st.session_state.initial_eval_faiss_loaded_toast_shown = False
-                st.session_state.initial_eval_faiss_not_found_toast_shown = False
-                st.session_state.initial_eval_faiss_error_toast_shown = False
-                st.session_state.initial_eval_faiss_load_attempted = False
-            return True
-
-        except Exception as e:
-            st.error(f"Lỗi khi xử lý tài liệu: {e}. Vui lòng kiểm tra file hoặc cài đặt thư viện 'unstructured'.")
-            return False
-        finally:
-            if os.path.exists(temp_dir):
-                shutil.rmtree(temp_dir)
 
 
-# --- Logic tải FAISS ban đầu cho Base Document ---
-if st.session_state.base_vector_store is None and not st.session_state.initial_base_faiss_load_attempted:
-    with st.spinner(f"Đang tải dữ liệu tài liệu cơ sở từ FAISS index '{BASE_FAISS_PATH}'..."): 
-        st.session_state.base_vector_store, status = load_faiss_index_from_disk(BASE_FAISS_PATH, embeddings)
+# Chỉ cố gắng tải FAISS từ đĩa nếu nó chưa được tải vào session_state VÀ chưa từng thử tải
+if st.session_state.vector_store is None and not st.session_state.initial_faiss_load_attempted:
+    with st.spinner(f"Đang tải dữ liệu AI từ FAISS index đã lưu trong '{FAISS_PATH}'..."):
+        st.session_state.vector_store, status = load_faiss_index_from_disk(FAISS_PATH, embeddings) # Truyền embeddings đã được cache
 
     if status == "loaded_successfully":
-        if not st.session_state.initial_base_faiss_loaded_toast_shown: 
-            # st.toast(f"FAISS index tài liệu cơ sở đã được tải thành công từ '{BASE_FAISS_PATH}'.", icon="✅")
-            st.session_state.initial_base_faiss_loaded_toast_shown = True
+        if not st.session_state.initial_faiss_loaded_toast_shown:
+            st.toast(f"FAISS index đã được tải thành công từ thư mục '{FAISS_PATH}'.", icon="✅")
+            st.session_state.initial_faiss_loaded_toast_shown = True
+        st.session_state.processing_done = True
     elif status.startswith("load_error"):
         error_message = status.split(":", 1)[1]
-        if not st.session_state.initial_base_faiss_error_toast_shown: 
-            st.error(f"Lỗi khi tải FAISS index tài liệu cơ sở: {error_message}. Vui lòng thử tải lại tài liệu.")
-            st.session_state.initial_base_faiss_error_toast_shown = True
-        st.session_state.base_vector_store = None
+        if not st.session_state.initial_faiss_error_toast_shown:
+            st.error(f"Lỗi khi tải FAISS index từ cục bộ: {error_message}. Vui lòng thử tải lại tài liệu.")
+            st.session_state.initial_faiss_error_toast_shown = True
+        st.session_state.processing_done = False
+        st.session_state.vector_store = None
     elif status == "not_found":
-        if not st.session_state.initial_base_faiss_not_found_toast_shown:
-            # st.toast(f"Chưa tìm thấy FAISS index tài liệu cơ sở trong thư mục '{BASE_FAISS_PATH}'. Vui lòng tải lên tài liệu.", icon="ℹ️")
-            st.session_state.initial_base_faiss_not_found_toast_shown = True
-        st.session_state.base_vector_store = None
+        if not st.session_state.initial_faiss_not_found_toast_shown:
+            st.toast(f"Chưa tìm thấy FAISS index trong thư mục '{FAISS_PATH}'. Vui lòng tải lên tài liệu.", icon="ℹ️")
+            st.session_state.initial_faiss_not_found_toast_shown = True
+        st.session_state.processing_done = False
+        st.session_state.vector_store = None
     elif status == "embeddings_not_ready":
+        # Điều này sẽ không xảy ra nếu logic tải embeddings chạy trước
         pass
-    st.session_state.initial_base_faiss_load_attempted = True
+    st.session_state.initial_faiss_load_attempted = True # Đánh dấu là đã thử tải lần đầu
 
-# --- Logic tải FAISS ban đầu cho Evaluation Document ---
-if st.session_state.eval_vector_store is None and not st.session_state.initial_eval_faiss_load_attempted:
-    with st.spinner(f"Đang tải dữ liệu tài liệu đánh giá từ FAISS index '{EVAL_FAISS_PATH}'..."):
-        st.session_state.eval_vector_store, status = load_faiss_index_from_disk(EVAL_FAISS_PATH, embeddings)
-
-    if status == "loaded_successfully":
-        if not st.session_state.initial_eval_faiss_loaded_toast_shown:
-            # st.toast(f"FAISS index tài liệu đánh giá đã được tải thành công từ '{EVAL_FAISS_PATH}'.", icon="✅")
-            st.session_state.initial_eval_faiss_loaded_toast_shown = True
-    elif status.startswith("load_error"):
-        error_message = status.split(":", 1)[1]
-        if not st.session_state.initial_eval_faiss_error_toast_shown:
-            st.error(f"Lỗi khi tải FAISS index tài liệu đánh giá: {error_message}. Vui lòng thử tải lại tài liệu.")
-            st.session_state.initial_eval_faiss_error_toast_shown = True
-        st.session_state.eval_vector_store = None
-    elif status == "not_found":
-        if not st.session_state.initial_eval_faiss_not_found_toast_shown:
-            # st.toast(f"Chưa tìm thấy FAISS index tài liệu đánh giá trong thư mục '{EVAL_FAISS_PATH}'. Vui lòng tải lên tài liệu.", icon="ℹ️")
-            st.session_state.initial_eval_faiss_not_found_toast_shown = True
-        st.session_state.eval_vector_store = None
-    st.session_state.initial_eval_faiss_load_attempted = True
-
-def handle_canchu_check_button(chat_model, base_store, eval_store):
-    if not base_store or not eval_store:
-        return "Để thực hiện 'kiểm tra căn cứ', vui lòng tải lên cả **Tài liệu Cơ sở** và **Tài liệu Đánh giá**."
-
-    # Prompt giả định cho việc truy xuất khi nhấn nút
-    # (Có thể là một chuỗi rỗng hoặc "kiểm tra" tùy cách bạn muốn retriever hoạt động)
-    # Vì bạn muốn nó hoạt động giống như khi người dùng nhập "kiểm tra", chúng ta sẽ dùng "kiểm tra" làm prompt để retriever tìm kiếm ngữ cảnh.
-    button_prompt_query = "kiểm tra"
-
-    # Truy xuất ngữ cảnh từ cả hai tài liệu
-    base_docs = []
-    eval_docs = []
-    base_context = ""
-    eval_context = ""
-
-    if base_store:
-        base_retriever = base_store.as_retriever(search_kwargs={"k": 3})
-        base_docs = base_retriever.invoke(button_prompt_query)
-        base_context = "\n".join([doc.page_content for doc in base_docs])
-
-    if eval_store:
-        eval_retriever = eval_store.as_retriever(search_kwargs={"k": 3})
-        eval_docs = eval_retriever.invoke(button_prompt_query)
-        eval_context = "\n".join([doc.page_content for doc in eval_docs])
-
-    # Prompt tùy chỉnh cho tác vụ "căn cứ"
-    final_prompt_template_content = f"""
-        Bạn là một trợ lý AI chuyên về trích xuất dữ liệu.
-        Nhiệm vụ của bạn là:
-
-        1.  **Xác định các dòng có từ "căn cứ"**: Từ "Ngữ cảnh từ Tài liệu ĐÁNH GIÁ", hãy tìm và trích xuất tất cả các dòng văn bản bắt đầu bằng từ "căn cứ".
-        2.  **Tìm kiếm trong Tài liệu Cơ sở**: Với mỗi dòng "căn cứ" đã trích xuất từ Tài liệu Đánh giá, hãy sử dụng nội dung của dòng đó làm truy vấn để tìm kiếm thông tin liên quan và khớp trong "Ngữ cảnh từ Tài liệu CƠ SỞ". Hãy tìm các đoạn văn bản có nội dung tương đồng hoặc liên quan chặt chẽ (khoảng 90% độ khớp về ý nghĩa) với dòng "căn cứ" đó, không cần phải khớp chính xác từng từ.
-        3.  **Định dạng kết quả dạng bảng**: Trả về thông tin tìm được từ "Ngữ cảnh từ Tài liệu CƠ SỞ" dưới dạng một bảng duy nhất.
-            * **Quan trọng:** Bảng này phải chứa **tất cả các cột dữ liệu có thể nhận diện được** từ Tài liệu Cơ sở liên quan đến thông tin tìm được. Nếu Tài liệu Cơ sở của bạn có cấu trúc giống bảng hoặc dữ liệu có thể được phân loại thành các cột (ví dụ: "Tiêu đề", "Nội dung", "Ngày", "Mã", "Mô tả", v.v.), hãy sử dụng chúng làm tên cột. Nếu không, hãy sử dụng các tiêu đề cột hợp lý nhất để trình bày thông tin một cách có cấu trúc.
-            * Mỗi hàng trong bảng phải là một mục dữ liệu khớp được tìm thấy trong Tài liệu Cơ sở.
-
-        Câu hỏi của người dùng: {button_prompt_query}
-
-        ---
-        Ngữ cảnh từ Tài liệu CƠ SỞ:
-        {base_context}
-        ---
-        Ngữ cảnh từ Tài liệu ĐÁNH GIÁ:
-        {eval_context}
-        ---
-
-        Nếu không có thông tin liên quan để tạo bảng hoặc không thể định dạng thành bảng, hãy nói rằng bạn không tìm thấy kết quả phù hợp trong tài liệu, đừng cố bịa ra câu trả lời. Trả lời trực tiếp bằng bảng (hoặc thông báo không tìm thấy) mà không có bất kỳ lời dẫn hay kết luận nào.
-        """
-
-    messages_for_llm = ChatPromptTemplate.from_messages([
-        ("system", final_prompt_template_content),
-        ("human", button_prompt_query)
-    ])
-
-    chain = messages_for_llm | chat_model
+def read_excel_to_array():
+    file_path = "./data/1. AI . DM nội dung trình HĐTV từ Ban Kế hoạch (B02) final.xlsx"
+    sheet_name = "Danh sách văn bản"
     try:
-        response = chain.invoke({"input": button_prompt_query})
-        return response.content
+        if sheet_name:
+            df = pd.read_excel(file_path, sheet_name=sheet_name)
+        else:
+            df = pd.read_excel(file_path)
+        data_array = df.values.tolist()
+        return data_array
+    except FileNotFoundError:
+        print(f"Lỗi: Không tìm thấy file tại đường dẫn '{file_path}'")
+        return None
+    except KeyError:
+        print(f"Lỗi: Không tìm thấy sheet '{sheet_name}' trong file.")
+        return None
     except Exception as e:
-        return f"Có lỗi xảy ra khi tạo câu trả lời: {str(e)}"
+        print(f"Đã xảy ra lỗi khi đọc file Excel: {e}")
+        return None
+    
+def handleCheck(llm_model, vector_store):
+    data_from_excel = read_excel_to_array()
+    if vector_store:
+        try:
+            retriever = vector_store.as_retriever()
+            check_prompt_template = """
+                Bạn là một trợ lý AI chuyên nghiệp và tỉ mỉ.
+
+                **Nhiệm vụ:**
+                Từ ngữ cảnh được cung cấp bên dưới, hãy **tìm và liệt kê chính xác TẤT CẢ các dòng hoặc đoạn văn bản** mà trong đó xuất hiện từ hoặc cụm từ **'căn cứ'**.
+
+                **Lưu ý quan trọng:**
+                * Hãy chú ý đến **ngữ cảnh và cấu trúc câu** để đảm bảo 'căn cứ' được sử dụng đúng nghĩa.
+                * **Tránh các lỗi định dạng hoặc ký tự lạ** khi trích xuất. Chỉ trả về phần văn bản gốc, chuẩn xác.
+                * Nếu một dòng/đoạn có chứa 'căn cứ' và sau đó lại bị sửa đổi hoặc hủy bỏ bởi một ghi chú, bạn vẫn liệt kê nó nhưng có thể ghi chú thêm nếu thông tin đó rõ ràng trong ngữ cảnh.
+
+                **Định dạng kết quả:**
+                Liệt kê mỗi dòng/đoạn tìm được trên một dòng riêng.
+                Nếu không tìm thấy bất kỳ dòng/đoạn nào chứa 'căn cứ', hãy trả lời rõ ràng: "Không tìm thấy bất kỳ dữ liệu trong ngữ cảnh được cung cấp."
+
+                **Ngữ cảnh:**
+                {context}
+                """
+            check_rag_prompt = ChatPromptTemplate.from_messages([
+                ("system", check_prompt_template),
+                ("human", "{input}")
+            ])
+
+            combine_docs_chain = create_stuff_documents_chain(llm_model, check_rag_prompt)
+            retrieval_chain = create_retrieval_chain(retriever, combine_docs_chain)
+
+            response = retrieval_chain.invoke({"input": "Tìm những dòng có từ 'căn cứ' trong văn bản"})
+
+            results = []
+            date_pattern = re.compile(r'(\d{1,2})/(\d{1,2})/(\d{4})')
+            for item in data_from_excel:
+                stt = item[0] 
+                doc_title = item[1] 
+                found_date_str_in_title = None 
+                status = item[3]
+
+                if isinstance(doc_title, str):
+                    match_obj = date_pattern.search(doc_title)
+                    
+                    if match_obj:
+                        found_date_str_in_title = match_obj.group(0)
+                text_matches = isinstance(doc_title, str) and doc_title.lower() in response["answer"].lower()
+                date_matches = False
+                if found_date_str_in_title:
+                    date_matches = found_date_str_in_title in response["answer"] 
+
+                if text_matches or date_matches:
+                    new_record = [stt, doc_title, found_date_str_in_title if found_date_str_in_title is not None else "", status if status is not None else ""]
+                    results.append(new_record)
+            return results
+        except Exception as e:
+            return f"Lỗi khi thực hiện kiểm tra: {str(e)}"
+    else:
+        return "Không có dữ liệu tải lên để thực hiện kiểm tra. Vui lòng tải lên tài liệu trước."
+
 
 # --- Menu điều hướng dọc ở Sidebar ---
 with st.sidebar:
@@ -382,86 +295,29 @@ if selected == "Chatbot":
 
         with st.spinner("Đang xử lý..."):
             try:
-                answer = ""
-                retrieved_docs = []
-                base_context = ""
-                eval_context = ""
+                if st.session_state.vector_store:
+                    retriever = st.session_state.vector_store.as_retriever()
+                    # Sử dụng rag_prompt (ChatPromptTemplate) đã định nghĩa ở trên
+                    combine_docs_chain = create_stuff_documents_chain(chat, rag_prompt)
+                    retrieval_chain = create_retrieval_chain(retriever, combine_docs_chain)
 
-                if st.session_state.base_vector_store:
-                    base_retriever = st.session_state.base_vector_store.as_retriever(search_kwargs={"k": 3})
-                    base_docs = base_retriever.invoke(prompt)
-                    retrieved_docs.extend(base_docs)
-                    base_context = "\n".join([doc.page_content for doc in base_docs])
-
-                if st.session_state.eval_vector_store:
-                    eval_retriever = st.session_state.eval_vector_store.as_retriever(search_kwargs={"k": 3})
-                    eval_docs = eval_retriever.invoke(prompt)
-                    retrieved_docs.extend(eval_docs)
-                    eval_context = "\n".join([doc.page_content for doc in eval_docs])
-                
-
-                if prompt.lower() == "kiểm tra":
-                    if st.session_state.base_vector_store and st.session_state.eval_vector_store:
-                        final_prompt_template_content = f"""
-                            Bạn là một trợ lý AI chuyên về trích xuất dữ liệu.
-                            Nhiệm vụ của bạn là:
-
-                            1.  **Xác định các dòng có từ "căn cứ"**: Từ "Ngữ cảnh từ Tài liệu ĐÁNH GIÁ", hãy tìm và trích xuất tất cả các dòng văn bản bắt đầu bằng từ "căn cứ".
-                            2.  **Tìm kiếm trong Tài liệu Cơ sở**: Với mỗi dòng "căn cứ" đã trích xuất từ Tài liệu Đánh giá, hãy sử dụng nội dung của dòng đó làm truy vấn để tìm kiếm thông tin liên quan và khớp trong "Ngữ cảnh từ Tài liệu CƠ SỞ". Hãy tìm các đoạn văn bản có nội dung tương đồng hoặc liên quan chặt chẽ (khoảng 90% độ khớp về ý nghĩa) với dòng "căn cứ" đó, không cần phải khớp chính xác từng từ.
-                            3.  **Định dạng kết quả dạng bảng**: Trả về thông tin tìm được từ "Ngữ cảnh từ Tài liệu CƠ SỞ" dưới dạng một bảng duy nhất.
-                                * **Quan trọng:** Bảng này phải chứa **tất cả các cột dữ liệu có thể nhận diện được** từ Tài liệu Cơ sở liên quan đến thông tin tìm được. Nếu Tài liệu Cơ sở của bạn có cấu trúc giống bảng hoặc dữ liệu có thể được phân loại thành các cột (ví dụ: "Tiêu đề", "Nội dung", "Ngày", "Mã", "Mô tả", v.v.), hãy sử dụng chúng làm tên cột. Nếu không, hãy sử dụng các tiêu đề cột hợp lý nhất để trình bày thông tin một cách có cấu trúc.
-                                * Mỗi hàng trong bảng phải là một mục dữ liệu khớp được tìm thấy trong Tài liệu Cơ sở.
-
-                            Câu hỏi của người dùng: {prompt}
-
-                            ---
-                            Ngữ cảnh từ Tài liệu CƠ SỞ:
-                            {base_context}
-                            ---
-                            Ngữ cảnh từ Tài liệu ĐÁNH GIÁ:
-                            {eval_context}
-                            ---
-
-                            Nếu không có thông tin liên quan để tạo bảng hoặc không thể định dạng thành bảng, hãy nói rằng bạn không tìm thấy kết quả phù hợp trong tài liệu, đừng cố bịa ra câu trả lời. Trả lời trực tiếp bằng bảng (hoặc thông báo không tìm thấy) mà không có bất kỳ lời dẫn hay kết luận nào.
-                            """
-
-                        messages_for_llm = ChatPromptTemplate.from_messages([
-                            ("system", final_prompt_template_content),
-                            ("human", prompt)
-                        ])
-
-                        chain = messages_for_llm | chat
-                        response = chain.invoke({"input": prompt})
-                        answer = response.content
-
-                    else:
-                        answer = "Để thực hiện 'kiểm tra' theo yêu cầu, vui lòng đảm bảo bạn đã tải lên cả **Tài liệu Cơ sở** và **Tài liệu Đánh giá** trong mục 'Quản lý dữ liệu'."
-                        st.warning(answer)
-                    st.session_state.check_button_pressed = False
+                    response = retrieval_chain.invoke({"input": prompt})
+                    answer = response["answer"]
 
                 else:
-                    if st.session_state.base_vector_store or st.session_state.eval_vector_store:
-                        if not retrieved_docs:
-                            answer = "Không tìm được kết quả phù hợp trong tài liệu."
-                        else:
-                            rag_chain = create_stuff_documents_chain(chat, rag_prompt)
-                            response = rag_chain.invoke({"context": retrieved_docs, "input": prompt})
-                            if isinstance(response, dict) and "answer" in response:
-                                answer = response["answer"]
-                            else:
-                                answer = response
-
-                            if not answer or answer.strip().lower() == "tôi không biết." or "không tìm thấy thông tin" in answer.lower():
-                                answer = "Không tìm được kết quả phù hợp trong tài liệu."
-                    else:
-                        st.warning("Không tìm thấy dữ liệu tài liệu nào. Chatbot sẽ trả lời dựa trên kiến thức chung.")
-                        default_prompt = ChatPromptTemplate.from_messages([
-                            ("system", PROMPT_TEMPLATE),
-                            ("human", "{input}")
-                        ])
-                        chain = default_prompt | chat
-                        response = chain.invoke({"input": prompt})
-                        answer = response.content
+                    st.warning("Không tìm thấy dữ liệu cá nhân. Chatbot sẽ trả lời dựa trên kiến thức chung.")
+                    fallback_prompt_template = """
+Bạn là một trợ lý AI hữu ích. Hãy trả lời câu hỏi sau bằng tiếng Việt một cách rõ ràng, chính xác và tự nhiên:
+Câu hỏi: {input}
+"""
+                    # Sử dụng ChatPromptTemplate cho fallback cũng vậy
+                    default_prompt = ChatPromptTemplate.from_messages([
+                        ("system", fallback_prompt_template),
+                        ("human", "{input}")
+                    ])
+                    chain = default_prompt | chat
+                    response = chain.invoke({"input": prompt})
+                    answer = response.content
 
                 with st.chat_message("assistant"):
                     st.markdown(answer)
@@ -471,109 +327,126 @@ if selected == "Chatbot":
                 st.error(f"Có lỗi xảy ra: {str(e)}")
 
 elif selected == "Quản lý dữ liệu":
-    st.header("Tải lên Tài liệu")
+    st.header("Trang Quản lý Dữ liệu")
+    st.write("Tại đây, bạn có thể tải lên tài liệu mới để cập nhật dữ liệu cho chatbot hoặc xem trạng thái dữ liệu hiện có.")
 
     if embeddings is None:
         st.warning("Mô hình Embedding không khả dụng. Vui lòng kiểm tra các thông báo lỗi ở trên để biết chi tiết.")
 
-    st.info("Tải lên file PDF, DOCX hoặc XLSX. Sau đó, chọn loại tài liệu (Cơ sở hoặc Đánh giá).")
-    # Thêm Radio Button để chọn loại tài liệu (MỚI)
-    document_type = st.radio(
-        "Đây là loại tài liệu gì?",
-        ("Tài liệu Cơ sở", "Tài liệu cần Kiểm tra"),
-        key="doc_type_selector",
-        index=1, # Mặc định là "Tài liệu Đánh giá/Kiểm tra"
-        help="Chọn 'Tài liệu Cơ sở' cho dữ liệu chính của chatbot, hoặc 'Tài liệu cần Kiểm tra' cho dữ liệu phụ để so sánh."
+    uploaded_file = st.file_uploader(
+        "Chọn một file PDF, DOCX hoặc XLSX để cập nhật dữ liệu",
+        type=["pdf", "docx", "xlsx"],
+        accept_multiple_files=False,
+        help="Tải lên tài liệu của bạn để chatbot có thể trả lời các câu hỏi dựa trên nội dung đó. Việc tải file mới sẽ ghi đè dữ liệu cũ."
     )
 
-    uploaded_file = st.file_uploader(
-        "Chọn một file để tải lên",
-        type=["pdf", "txt", "docx", "xlsx"],
-        key="single_file_uploader",
-        help="Tải lên tài liệu của bạn. Bạn sẽ chọn đây là tài liệu cơ sở hay tài liệu đánh giá."
-    )
+    if 'last_processed_file_info' not in st.session_state:
+        st.session_state.last_processed_file_info = None
 
     if uploaded_file:
-        if document_type == "Tài liệu Cơ sở":
-            target_faiss_path = BASE_FAISS_PATH
-            target_vector_store_key = "base_vector_store"
-            doc_type_name = "Tài liệu Cơ sở"
-        else:
-            target_faiss_path = EVAL_FAISS_PATH
-            target_vector_store_key = "eval_vector_store"
-            doc_type_name = "Tài liệu cần Kiểm tra"
+        current_file_info = (uploaded_file.name, uploaded_file.size)
+        if current_file_info != st.session_state.last_processed_file_info:
+            if embeddings is None:
+                st.error("Không thể xử lý tài liệu vì mô hình Embedding không khả dụng. Vui lòng kiểm tra các thông báo lỗi trên cùng.")
+            else:
+                # Tạo một thư mục tạm thời để lưu file
+                import tempfile
+                import shutil
+                temp_dir = tempfile.mkdtemp()
+                temp_file_path = os.path.join(temp_dir, uploaded_file.name)
 
-        current_file_id = f"{uploaded_file.name}-{uploaded_file.size}-{document_type}"
+                with st.spinner("Đang xử lý tài liệu... Vui lòng chờ trong giây lát."):
+                    try:
+                        file_extension = uploaded_file.name.split(".")[-1].lower()
 
-        # Kiểm tra xem file hiện tại có khác với file đã xử lý gần nhất cho loại tài liệu này không
-        if st.session_state.get(f'last_processed_file_{target_vector_store_key}') != current_file_id:
-            if process_uploaded_file(uploaded_file, target_faiss_path, target_vector_store_key, doc_type_name):
-                st.session_state[f'last_processed_file_{target_vector_store_key}'] = current_file_id
-                st.rerun()
+                        with open(temp_file_path, "wb") as f:
+                            f.write(uploaded_file.getbuffer())
+
+                        docs = []
+                        if file_extension == "pdf":
+                            loader = PyPDFLoader(temp_file_path)
+                            docs = loader.load()
+                        elif file_extension == "docx":
+                            loader = UnstructuredWordDocumentLoader(temp_file_path)
+                            docs = loader.load()
+                        elif file_extension == "xlsx":
+                            loader = UnstructuredExcelLoader(temp_file_path)
+                            docs = loader.load()
+                        else:
+                            st.error("Định dạng file không được hỗ trợ. Vui lòng tải lên file PDF, DOCX, hoặc XLSX.")
+                            shutil.rmtree(temp_dir)
+                            st.stop()
+
+                        text_splitter = RecursiveCharacterTextSplitter(
+                            chunk_size=1000,
+                            chunk_overlap=200
+                        )
+                        splits = text_splitter.split_documents(docs)
+
+                        # Luôn tạo mới hoặc ghi đè FAISS index khi tải file mới
+                        st.session_state.vector_store = FAISS.from_documents(splits, embeddings)
+                        st.session_state.vector_store.save_local(FAISS_PATH)
+
+                        st.success(f"Tài liệu đã được xử lý.")
+                        st.session_state.last_processed_file_info = current_file_info
+
+                        # Reset các cờ trạng thái để thông báo FAISS có thể hiển thị lại nếu cần
+                        st.session_state.initial_faiss_loaded_toast_shown = False
+                        st.session_state.initial_faiss_not_found_toast_shown = False
+                        st.session_state.initial_faiss_error_toast_shown = False
+                        st.session_state.initial_faiss_load_attempted = False # Buộc tải lại FAISS từ đĩa nếu trang được làm mới
+
+                    except Exception as e:
+                        st.error(f"Lỗi khi xử lý tài liệu: {e}. Vui lòng kiểm tra file hoặc cài đặt!")
+                    finally:
+                        # Dọn dẹp: Xóa thư mục tạm thời
+                        if os.path.exists(temp_dir):
+                            shutil.rmtree(temp_dir)
         else:
-            pass
+            st.session_state.last_processed_file_info = None
 
     st.markdown("---")
     st.subheader("Trạng thái dữ liệu hiện tại:")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.write("#### Tài liệu Cơ sở:")
-        if st.session_state.base_vector_store:
-            st.write("✅ Đã tải và sẵn sàng.")
-        else:
-            st.write("❌ Chưa tải.")
-        if st.button("Xóa Tài liệu Cơ sở", key="delete_base_faiss"):
-            if os.path.exists(BASE_FAISS_PATH):
-                import shutil
-                try:
-                    shutil.rmtree(BASE_FAISS_PATH)
-                    st.session_state.base_vector_store = None
-                    st.session_state.initial_base_faiss_loaded_toast_shown = False
-                    st.session_state.initial_base_faiss_not_found_toast_shown = False
-                    st.session_state.initial_base_faiss_error_toast_shown = False
-                    st.session_state.initial_base_faiss_load_attempted = False
-                    st.success("Tài liệu Cơ sở đã được xóa.")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Lỗi khi xóa Tài liệu Cơ sở: {e}")
-            else:
-                st.info("Không tìm thấy Tài liệu Cơ sở để xóa.")
+    if st.session_state.vector_store:
+        st.write("✅ Dữ liệu đã được tải và sẵn sàng sử dụng trong Chatbot.")
+    else:
+        st.write("❌ Chưa có dữ liệu nào được tải. Vui lòng tải lên tài liệu.")
 
-    with col2:
-        st.write("#### Tài liệu cần Kiểm tra:")
-        if st.session_state.eval_vector_store:
-            st.write("✅ Đã tải và sẵn sàng.")
-        else:
-            st.write("❌ Chưa tải.")
-        if st.button("Xóa Tài liệu cần kiểm tra", key="delete_eval_faiss"):
-            if os.path.exists(EVAL_FAISS_PATH):
-                import shutil
-                try:
-                    shutil.rmtree(EVAL_FAISS_PATH)
-                    st.session_state.eval_vector_store = None
-                    st.session_state.initial_eval_faiss_loaded_toast_shown = False
-                    st.session_state.initial_eval_faiss_not_found_toast_shown = False
-                    st.session_state.initial_eval_faiss_error_toast_shown = False
-                    st.session_state.initial_eval_faiss_load_attempted = False
-                    st.success("FAISS index Tài liệu cần kiểm tra đã được xóa.")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Lỗi khi xóa Tài liệu cần kiểm tra: {e}")
-            else:
-                st.info("Không tìm thấy Tài liệu cần kiểm tra để xóa.")
-
-
-    st.subheader("Kiểm tra và Trích xuất Dữ liệu")
+    # if st.button("Xóa FAISS Index hiện có"):
+    #     if os.path.exists(FAISS_PATH):
+    #         import shutil
+    #         try:
+    #             shutil.rmtree(FAISS_PATH)
+    #             st.session_state.vector_store = None
+    #             st.session_state.initial_faiss_loaded_toast_shown = False
+    #             st.session_state.initial_faiss_not_found_toast_shown = False
+    #             st.session_state.initial_faiss_error_toast_shown = False
+    #             st.session_state.initial_faiss_load_attempted = False
+    #             st.success("FAISS index đã được xóa thành công. Vui lòng tải lại trang hoặc tải lên tài liệu mới để tạo lại.")
+    #             st.rerun()
+    #         except Exception as e:
+    #             st.error(f"Lỗi khi xóa FAISS index: {e}")
+    #     else:
+    #         st.info("Không tìm thấy FAISS index để xóa.")
+    st.subheader("Kiểm tra tài liệu")
     st.write("Nhấn nút dưới đây để thực hiện kiểm tra tự động")
 
+    if 'docs_check_result' not in st.session_state:
+        st.session_state.docs_check_result = ""
     
     if st.button("Thực hiện Kiểm tra"):
-
         canchu_check_result_placeholder = st.empty()
         with st.spinner("Đang thực hiện kiểm tra"):
-            result_for_button = handle_canchu_check_button(
+            result_for_button = handleCheck(
                 chat,
-                st.session_state.get("base_vector_store"),
-                st.session_state.get("eval_vector_store")
+                st.session_state.vector_store
             )
-    canchu_check_result_placeholder.markdown(result_for_button)
+            st.session_state.docs_check_result = result_for_button
+    
+    if st.session_state.docs_check_result:
+        columns = ["STT", "Tên văn bản", "Ngày phát hành", "Trạng thái"]
+        df = pd.DataFrame(st.session_state.docs_check_result, columns=columns)
+        
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.info("Không có dữ liệu nào để hiển thị.")
