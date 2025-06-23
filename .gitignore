@@ -114,7 +114,6 @@ __pycache__
 
 .ipynb_checkpoints/
 log/
-data/
 jupyter_dev/
 
 .env
@@ -123,7 +122,6 @@ jupyter_dev/
 *.faiss
 *.pkl
 
-*.pdf
 chromedriver
 scripts/
 
