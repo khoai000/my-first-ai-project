@@ -1,11 +1,8 @@
 import os
 import streamlit as st
-# import google.generativeai as genai
-# from langchain_google_genai import ChatGoogleGenerativeAI
-# from langchain.prompts import PromptTemplate
 from dotenv import load_dotenv
 from streamlit_option_menu import option_menu
-from langchain_community.document_loaders import PyPDFLoader, UnstructuredWordDocumentLoader, UnstructuredExcelLoader
+from langchain_community.document_loaders import UnstructuredWordDocumentLoader, UnstructuredExcelLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -15,31 +12,18 @@ from langchain_core.prompts import ChatPromptTemplate
 import pandas as pd
 import re
 from langchain_groq import ChatGroq
+from langchain_core.documents import Document
 
 from pypdf import PdfReader
-from pdf2image import convert_from_path
-from paddleocr import PaddleOCR
-import numpy as np
-from PIL import Image
 import unicodedata
+import tempfile
+import shutil
+import pytesseract
+from pdf2image import convert_from_path
 
 load_dotenv()
 
 st.set_page_config(page_title="🤖 Chatbot AI", layout="wide")
-
-# genai_api_key = os.getenv('GOOGLE_API_KEY')
-# if not genai_api_key:
-#     st.error("GOOGLE_API_KEY không được tìm thấy trong file .env. Vui lòng thêm khóa API của Gemini.")
-#     st.stop()
-
-# genai.configure(api_key=genai_api_key)
-
-# chat = ChatGoogleGenerativeAI(
-#     model="gemini-1.5-flash",
-#     temperature=0,
-#     google_api_key=genai_api_key,
-#     convert_system_message_to_human=True
-# )
 
 groq_api_key = os.getenv('GROQ_API_KEY')
 if not groq_api_key:
@@ -177,7 +161,7 @@ if st.session_state.vector_store is None and not st.session_state.initial_faiss_
 
     if status == "loaded_successfully":
         if not st.session_state.initial_faiss_loaded_toast_shown:
-            st.toast(f"FAISS index đã được tải thành công từ thư mục '{FAISS_PATH}'.", icon="✅")
+            st.toast(f"Dữ liệu đã được tải thành công!", icon="✅")
             st.session_state.initial_faiss_loaded_toast_shown = True
         st.session_state.processing_done = True
     elif status.startswith("load_error"):
@@ -272,8 +256,6 @@ def handleCheck(llm_model, vector_store):
                 if text_matches or date_matches:
                     new_record = [stt, doc_title, found_date_str_in_title if found_date_str_in_title is not None else "", status if status is not None else ""]
                     results.append(new_record)
-            print("results", results)
-            print("response[]", response["answer"])
             return results
         except Exception as e:
             return f"Lỗi khi thực hiện kiểm tra: {str(e)}"
@@ -295,43 +277,22 @@ def has_text_layer(pdf_path: str) -> bool:
         st.warning(f"Không thể kiểm tra text layer của PDF: {e}. Coi như không có text layer và sẽ dùng OCR.")
         return False # Giả định không có để dùng OCR
 
-# --- Hàm OCR PDF bằng PaddleOCR ---
-@st.cache_resource
-def get_paddleocr_model():
-    # Tải mô hình PaddleOCR một lần và cache lại
-    # lang='vi' cho tiếng Việt, use_gpu=False nếu không có GPU hoặc không muốn dùng
-    # show_log=False để ẩn log tải mô hình nếu không cần thiết
-    return PaddleOCR(lang='vi', use_gpu=False, det_model_dir=None, rec_model_dir=None, cls_model_dir=None, show_log=False)
-
-
-# --- Hàm OCR PDF bằng PaddleOCR ---
-@st.cache_resource
-def get_paddleocr_model():
-    # Tải mô hình PaddleOCR một lần và cache lại
-    # lang='vi' cho tiếng Việt, use_gpu=False nếu không có GPU hoặc không muốn dùng
-    # show_log=False để ẩn log tải mô hình nếu không cần thiết
-    return PaddleOCR(lang='vi', use_gpu=False, det_model_dir=None, rec_model_dir=None, cls_model_dir=None, show_log=False)
-
-def ocr_pdf(pdf_path: str, ocr_model) -> str:
-    text_content = []
-    images = convert_from_path(pdf_path) # Chuyển mỗi trang PDF thành ảnh
-
-    for i, image in enumerate(images):
-        try:
-            # Chuyển ảnh PIL sang dạng numpy array để PaddleOCR xử lý
-            img_np = np.array(image)
-            result = ocr_model.ocr(img_np, cls=True) # cls=True để nhận dạng chữ dọc
-
-            if result and result[0]: # result[0] chứa các kết quả từng dòng
-                for line in result[0]:
-                    if line[1][0]: # line[1][0] là văn bản trích xuất
-                        text_content.append(line[1][0])
+def ocr_pdf(pdf_path: str) -> str:
+    try:
+        text_content = []
+        images = convert_from_path(pdf_path)
+        for i, image in enumerate(images):
+            # pytesseract yêu cầu ảnh ở dạng RGB
+            image = image.convert("RGB")
+            text = pytesseract.image_to_string(image, lang="vie")  # lang="vie" nếu bạn cài tiếng Việt
+            if text.strip():
+                text_content.append(text)
             else:
-                st.warning(f"Không trích xuất được văn bản từ trang {i+1} của PDF bằng OCR.")
-        except Exception as e:
-            st.error(f"Lỗi OCR trang {i+1}: {e}")
-            continue
-    return "\n".join(text_content)
+                st.warning(f"OCR không trích xuất được văn bản từ trang {i+1}.")
+        return "\n".join(text_content)
+    except Exception as e:
+        st.error(f"Lỗi khi chạy OCR bằng Tesseract: {e}")
+        return ""
 
 # --- Các hàm tiền xử lý văn bản ---
 def normalize_text(text):
@@ -365,6 +326,14 @@ def remove_non_alphanumeric_and_normalize_space(text):
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
+def extract_text_from_pdf(file_path: str):
+    try:
+        reader = PdfReader(file_path)
+        text = "\n\n".join([page.extract_text() or "" for page in reader.pages])
+        return [Document(page_content=text, metadata={"source": file_path})]
+    except Exception as e:
+        st.error(f"Lỗi khi trích xuất PDF: {str(e)}")
+        return []
 
 # --- Hàm xử lý tài liệu tổng quát ---
 def process_document(file_path: str, file_extension: str, embeddings_obj):
@@ -372,16 +341,15 @@ def process_document(file_path: str, file_extension: str, embeddings_obj):
     if file_extension == "pdf":
         if has_text_layer(file_path):
             st.info("Phát hiện PDF có lớp văn bản. Đang trích xuất văn bản trực tiếp.")
-            loader = PyPDFLoader(file_path)
-            docs = loader.load()
+            docs = extract_text_from_pdf(file_path)
+            if not docs:
+                st.error("Không trích xuất được nội dung từ PDF.")
+                return None
         else:
             st.warning("Phát hiện PDF dạng ảnh scan hoặc không có lớp văn bản. Đang tiến hành OCR...")
             with st.spinner("Đang tải mô hình OCR (chỉ lần đầu) và xử lý OCR..."):
-                ocr_model = get_paddleocr_model()
-                ocr_text = ocr_pdf(file_path, ocr_model)
+                ocr_text = ocr_pdf(file_path)
             if ocr_text:
-                # PaddleOCR trả về một chuỗi văn bản, tạo một Document từ chuỗi đó
-                from langchain_core.documents import Document
                 docs.append(Document(page_content=ocr_text, metadata={"source": file_path, "ocr": True}))
             else:
                 st.error("OCR không trích xuất được văn bản từ PDF.")
@@ -426,7 +394,7 @@ with st.sidebar:
         options=["Chatbot", "Quản lý dữ liệu"],
         icons=["chat", "file-earmark-text"],
         menu_icon="list",
-        default_index=0,
+        default_index=1,
         orientation="vertical",
         styles={
             "container": {"padding": "0!important", "background-color": "transparent"},
@@ -498,57 +466,41 @@ elif selected == "Quản lý dữ liệu":
         help="Tải lên tài liệu của bạn để chatbot có thể trả lời các câu hỏi dựa trên nội dung đó. Việc tải file mới sẽ ghi đè dữ liệu cũ."
     )
 
-    if 'file_uploaded' not in st.session_state:
-        st.session_state.file_uploaded = False
-
-    if 'last_processed_file_info' not in st.session_state:
-        st.session_state.last_processed_file_info = None
-
     if uploaded_file is not None:
-        current_file_info = (uploaded_file.name, uploaded_file.size)
-        if current_file_info != st.session_state.last_processed_file_info:
-            if embeddings is None:
-                st.error("Không thể xử lý tài liệu vì mô hình Embedding không khả dụng. Vui lòng kiểm tra các thông báo lỗi trên cùng.")
-            else:
-                import tempfile
-                import shutil
-                temp_dir = tempfile.mkdtemp()
-                temp_file_path = os.path.join(temp_dir, uploaded_file.name)
-
-                with st.spinner("Đang xử lý tài liệu... Vui lòng chờ trong giây lát."):
-                    try:
-                        file_extension = uploaded_file.name.split(".")[-1].lower()
-
-                        with open(temp_file_path, "wb") as f:
-                            f.write(uploaded_file.getbuffer())
-
-                        new_vector_store = process_document(temp_file_path, file_extension, embeddings)
-
-                        if new_vector_store:
-                            st.session_state.vector_store = new_vector_store
-                            st.session_state.vector_store.save_local(FAISS_PATH)
-
-                            st.success(f"Tài liệu đã được xử lý và cập nhật.")
-                            st.session_state.last_processed_file_info = current_file_info
-                            st.session_state.file_uploaded = True
-
-                            # Reset các cờ trạng thái để thông báo FAISS có thể hiển thị lại nếu cần
-                            st.session_state.initial_faiss_loaded_toast_shown = False
-                            st.session_state.initial_faiss_not_found_toast_shown = False
-                            st.session_state.initial_faiss_error_toast_shown = False
-                            st.session_state.initial_faiss_load_attempted = False
-                        else:
-                            st.error("Không thể xử lý tài liệu hoặc không trích xuất được nội dung.")
-                    except Exception as e:
-                        st.error(f"Lỗi khi xử lý tài liệu: {e}. Vui lòng kiểm tra file hoặc cài đặt!")
-                    finally:
-                        # Dọn dẹp: Xóa thư mục tạm thời
-                        if os.path.exists(temp_dir):
-                            shutil.rmtree(temp_dir)
+        if embeddings is None:
+            st.error("Không thể xử lý tài liệu vì mô hình Embedding không khả dụng. Vui lòng kiểm tra các thông báo lỗi trên cùng.")
         else:
-            st.session_state.last_processed_file_info = None
-    else:
-        st.session_state.file_uploaded = False
+            temp_dir = tempfile.mkdtemp()
+            temp_file_path = os.path.join(temp_dir, uploaded_file.name)
+
+            with st.spinner("Đang xử lý tài liệu... Vui lòng chờ trong giây lát."):
+                try:
+                    file_extension = uploaded_file.name.split(".")[-1].lower()
+
+                    with open(temp_file_path, "wb") as f:
+                        f.write(uploaded_file.getbuffer())
+
+                    new_vector_store = process_document(temp_file_path, file_extension, embeddings)
+
+                    if new_vector_store:
+                        st.session_state.vector_store = new_vector_store
+                        st.session_state.vector_store.save_local(FAISS_PATH)
+
+                        st.success(f"Tài liệu đã được xử lý và cập nhật.")
+
+                        # Reset các cờ trạng thái để thông báo FAISS có thể hiển thị lại nếu cần
+                        st.session_state.initial_faiss_loaded_toast_shown = False
+                        st.session_state.initial_faiss_not_found_toast_shown = False
+                        st.session_state.initial_faiss_error_toast_shown = False
+                        st.session_state.initial_faiss_load_attempted = False
+                    else:
+                        st.error("Không thể xử lý tài liệu hoặc không trích xuất được nội dung.")
+                except Exception as e:
+                    st.error(f"Lỗi khi xử lý tài liệu: {e}. Vui lòng kiểm tra file hoặc cài đặt!")
+                finally:
+                    # Dọn dẹp: Xóa thư mục tạm thời
+                    if os.path.exists(temp_dir):
+                        shutil.rmtree(temp_dir)
 
     st.markdown("---")
     st.subheader("Trạng thái dữ liệu hiện tại:")
