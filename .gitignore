@@ -121,9 +121,9 @@ jupyter_dev/
 
 *.faiss
 *.pkl
+*.pdf
 
 chromedriver
 scripts/
 
-/local_models/multilingual-e5-large/
-/local_models/vietnamese-bi-encoder/
+/local_models
