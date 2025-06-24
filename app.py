@@ -1,38 +1,57 @@
 import os
 import streamlit as st
-import google.generativeai as genai
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.prompts import PromptTemplate
+# import google.generativeai as genai
+# from langchain_google_genai import ChatGoogleGenerativeAI
+# from langchain.prompts import PromptTemplate
 from dotenv import load_dotenv
 from streamlit_option_menu import option_menu
 from langchain_community.document_loaders import PyPDFLoader, UnstructuredWordDocumentLoader, UnstructuredExcelLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.chains import create_retrieval_chain
 from langchain_core.prompts import ChatPromptTemplate
 import pandas as pd
-from datetime import datetime
 import re
+from langchain_groq import ChatGroq
+
+from pypdf import PdfReader
+from pdf2image import convert_from_path
+from paddleocr import PaddleOCR
+import numpy as np
+from PIL import Image
+import unicodedata
 
 load_dotenv()
 
 st.set_page_config(page_title="🤖 Chatbot AI", layout="wide")
 
-genai_api_key = os.getenv('GOOGLE_API_KEY')
-if not genai_api_key:
-    st.error("GOOGLE_API_KEY không được tìm thấy trong file .env. Vui lòng thêm khóa API của Gemini.")
+# genai_api_key = os.getenv('GOOGLE_API_KEY')
+# if not genai_api_key:
+#     st.error("GOOGLE_API_KEY không được tìm thấy trong file .env. Vui lòng thêm khóa API của Gemini.")
+#     st.stop()
+
+# genai.configure(api_key=genai_api_key)
+
+# chat = ChatGoogleGenerativeAI(
+#     model="gemini-1.5-flash",
+#     temperature=0,
+#     google_api_key=genai_api_key,
+#     convert_system_message_to_human=True
+# )
+
+groq_api_key = os.getenv('GROQ_API_KEY')
+if not groq_api_key:
+    st.error("GROQ_API_KEY không được tìm thấy trong file .env. Vui lòng thêm khóa API của Groq.")
     st.stop()
 
-genai.configure(api_key=genai_api_key)
-
-chat = ChatGoogleGenerativeAI(
-    model="gemini-1.5-flash",
+chat = ChatGroq(
     temperature=0,
-    google_api_key=genai_api_key,
-    convert_system_message_to_human=True
+    groq_api_key=groq_api_key,
+    model_name="llama3-8b-8192"
 )
+
 PROMPT_TEMPLATE = """
     Bạn là một trợ lý AI hữu ích. Hãy trả lời câu hỏi sau bằng tiếng Việt một cách rõ ràng và chính xác.
     Sử dụng các đoạn ngữ cảnh được cung cấp để trả lời câu hỏi. Nếu bạn không biết câu trả lời, hãy nói rằng bạn không biết, đừng cố bịa ra câu trả lời.
@@ -262,6 +281,144 @@ def handleCheck(llm_model, vector_store):
         return "Không có dữ liệu tải lên để thực hiện kiểm tra. Vui lòng tải lên tài liệu trước."
 
 
+
+# --- Hàm kiểm tra xem PDF có text layer hay không ---
+def has_text_layer(pdf_path: str) -> bool:
+    try:
+        reader = PdfReader(pdf_path)
+        for page in reader.pages:
+            # Kiểm tra xem trang có bất kỳ văn bản nào không
+            if page.extract_text():
+                return True
+        return False
+    except Exception as e:
+        st.warning(f"Không thể kiểm tra text layer của PDF: {e}. Coi như không có text layer và sẽ dùng OCR.")
+        return False # Giả định không có để dùng OCR
+
+# --- Hàm OCR PDF bằng PaddleOCR ---
+@st.cache_resource
+def get_paddleocr_model():
+    # Tải mô hình PaddleOCR một lần và cache lại
+    # lang='vi' cho tiếng Việt, use_gpu=False nếu không có GPU hoặc không muốn dùng
+    # show_log=False để ẩn log tải mô hình nếu không cần thiết
+    return PaddleOCR(lang='vi', use_gpu=False, det_model_dir=None, rec_model_dir=None, cls_model_dir=None, show_log=False)
+
+
+# --- Hàm OCR PDF bằng PaddleOCR ---
+@st.cache_resource
+def get_paddleocr_model():
+    # Tải mô hình PaddleOCR một lần và cache lại
+    # lang='vi' cho tiếng Việt, use_gpu=False nếu không có GPU hoặc không muốn dùng
+    # show_log=False để ẩn log tải mô hình nếu không cần thiết
+    return PaddleOCR(lang='vi', use_gpu=False, det_model_dir=None, rec_model_dir=None, cls_model_dir=None, show_log=False)
+
+def ocr_pdf(pdf_path: str, ocr_model) -> str:
+    text_content = []
+    images = convert_from_path(pdf_path) # Chuyển mỗi trang PDF thành ảnh
+
+    for i, image in enumerate(images):
+        try:
+            # Chuyển ảnh PIL sang dạng numpy array để PaddleOCR xử lý
+            img_np = np.array(image)
+            result = ocr_model.ocr(img_np, cls=True) # cls=True để nhận dạng chữ dọc
+
+            if result and result[0]: # result[0] chứa các kết quả từng dòng
+                for line in result[0]:
+                    if line[1][0]: # line[1][0] là văn bản trích xuất
+                        text_content.append(line[1][0])
+            else:
+                st.warning(f"Không trích xuất được văn bản từ trang {i+1} của PDF bằng OCR.")
+        except Exception as e:
+            st.error(f"Lỗi OCR trang {i+1}: {e}")
+            continue
+    return "\n".join(text_content)
+
+# --- Các hàm tiền xử lý văn bản ---
+def normalize_text(text):
+    if not isinstance(text, str):
+        return text
+    text = unicodedata.normalize('NFC', text)
+    text = ''.join(char for char in text if unicodedata.category(char)[0] != 'C')
+    return text.strip()
+
+def fix_common_ocr_errors(text):
+    if not isinstance(text, str):
+        return text
+    replacements = {
+        'cü': 'căn cứ', 'k&': 'kế', 'drng': 'dựng', 'närn': 'năm',
+        'Di&n': 'Điện', 'thijc hin': 'thực hiện', 'cp nht': 'cập nhật',
+        'san xut': 'sản xuất', 'diu in': 'điều hành', # Hoặc 'điện' tùy ngữ cảnh chính xác
+        'phát tri&i': 'phát triển', 'giai doan': 'giai đoạn',
+        'TP 1Jà NOi': 'TP Hà Nội', '1J': 'H', # Rất phổ biến lỗi này trong OCR tiếng Việt
+        'Vän ban': 'Văn bản', 'Ban k& hoch': 'Ban kế hoạch',
+        # Thêm các cặp lỗi-sửa khác mà bạn quan sát được
+    }
+    for wrong, correct in replacements.items():
+        text = re.sub(re.escape(wrong), correct, text, flags=re.IGNORECASE)
+    return text
+
+def remove_non_alphanumeric_and_normalize_space(text):
+    if not isinstance(text, str):
+        return text
+    # Giữ lại chữ cái, số, ký tự tiếng Việt, dấu câu cơ bản và khoảng trắng
+    text = re.sub(r'[^\w\s.,!?;ÀÁẠẢÃĂẰẮẶẲẴÂẦẤẬẨẪÈÉẸẺẼÊỀẾỆỂỄÌÍỊỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐđ]', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+# --- Hàm xử lý tài liệu tổng quát ---
+def process_document(file_path: str, file_extension: str, embeddings_obj):
+    docs = []
+    if file_extension == "pdf":
+        if has_text_layer(file_path):
+            st.info("Phát hiện PDF có lớp văn bản. Đang trích xuất văn bản trực tiếp.")
+            loader = PyPDFLoader(file_path)
+            docs = loader.load()
+        else:
+            st.warning("Phát hiện PDF dạng ảnh scan hoặc không có lớp văn bản. Đang tiến hành OCR...")
+            with st.spinner("Đang tải mô hình OCR (chỉ lần đầu) và xử lý OCR..."):
+                ocr_model = get_paddleocr_model()
+                ocr_text = ocr_pdf(file_path, ocr_model)
+            if ocr_text:
+                # PaddleOCR trả về một chuỗi văn bản, tạo một Document từ chuỗi đó
+                from langchain_core.documents import Document
+                docs.append(Document(page_content=ocr_text, metadata={"source": file_path, "ocr": True}))
+            else:
+                st.error("OCR không trích xuất được văn bản từ PDF.")
+                return None
+    elif file_extension == "docx":
+        loader = UnstructuredWordDocumentLoader(file_path)
+        docs = loader.load()
+    elif file_extension == "xlsx":
+        loader = UnstructuredExcelLoader(file_path)
+        docs = loader.load()
+    else:
+        st.error("Định dạng file không được hỗ trợ. Vui lòng tải lên file PDF, DOCX, hoặc XLSX.")
+        return None
+
+    # Áp dụng các bước tiền xử lý văn bản cho tất cả các tài liệu
+    processed_docs = []
+    for doc in docs:
+        cleaned_content = doc.page_content
+        cleaned_content = fix_common_ocr_errors(cleaned_content)
+        cleaned_content = normalize_text(cleaned_content)
+        cleaned_content = remove_non_alphanumeric_and_normalize_space(cleaned_content)
+        doc.page_content = cleaned_content
+        processed_docs.append(doc)
+
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=200
+    )
+    splits = text_splitter.split_documents(processed_docs)
+
+    if not splits:
+        st.warning("Không trích xuất được nội dung nào từ tài liệu sau khi chia nhỏ.")
+        return None
+
+    vector_store = FAISS.from_documents(splits, embeddings_obj)
+    return vector_store
+
 # --- Menu điều hướng dọc ở Sidebar ---
 with st.sidebar:
     selected = option_menu(
@@ -365,41 +522,23 @@ elif selected == "Quản lý dữ liệu":
                         with open(temp_file_path, "wb") as f:
                             f.write(uploaded_file.getbuffer())
 
-                        docs = []
-                        if file_extension == "pdf":
-                            loader = PyPDFLoader(temp_file_path)
-                            docs = loader.load()
-                        elif file_extension == "docx":
-                            loader = UnstructuredWordDocumentLoader(temp_file_path)
-                            docs = loader.load()
-                        elif file_extension == "xlsx":
-                            loader = UnstructuredExcelLoader(temp_file_path)
-                            docs = loader.load()
+                        new_vector_store = process_document(temp_file_path, file_extension, embeddings)
+
+                        if new_vector_store:
+                            st.session_state.vector_store = new_vector_store
+                            st.session_state.vector_store.save_local(FAISS_PATH)
+
+                            st.success(f"Tài liệu đã được xử lý và cập nhật.")
+                            st.session_state.last_processed_file_info = current_file_info
+                            st.session_state.file_uploaded = True
+
+                            # Reset các cờ trạng thái để thông báo FAISS có thể hiển thị lại nếu cần
+                            st.session_state.initial_faiss_loaded_toast_shown = False
+                            st.session_state.initial_faiss_not_found_toast_shown = False
+                            st.session_state.initial_faiss_error_toast_shown = False
+                            st.session_state.initial_faiss_load_attempted = False
                         else:
-                            st.error("Định dạng file không được hỗ trợ. Vui lòng tải lên file PDF, DOCX, hoặc XLSX.")
-                            shutil.rmtree(temp_dir)
-                            st.stop()
-
-                        text_splitter = RecursiveCharacterTextSplitter(
-                            chunk_size=1000,
-                            chunk_overlap=200
-                        )
-                        splits = text_splitter.split_documents(docs)
-
-                        # Luôn tạo mới hoặc ghi đè FAISS index khi tải file mới
-                        st.session_state.vector_store = FAISS.from_documents(splits, embeddings)
-                        st.session_state.vector_store.save_local(FAISS_PATH)
-
-                        st.success(f"Tài liệu đã được xử lý.")
-                        st.session_state.last_processed_file_info = current_file_info
-                        st.session_state.file_uploaded = True
-
-                        # Reset các cờ trạng thái để thông báo FAISS có thể hiển thị lại nếu cần
-                        st.session_state.initial_faiss_loaded_toast_shown = False
-                        st.session_state.initial_faiss_not_found_toast_shown = False
-                        st.session_state.initial_faiss_error_toast_shown = False
-                        st.session_state.initial_faiss_load_attempted = False # Buộc tải lại FAISS từ đĩa nếu trang được làm mới
-
+                            st.error("Không thể xử lý tài liệu hoặc không trích xuất được nội dung.")
                     except Exception as e:
                         st.error(f"Lỗi khi xử lý tài liệu: {e}. Vui lòng kiểm tra file hoặc cài đặt!")
                     finally:
