@@ -2,7 +2,6 @@ import os
 import streamlit as st
 import google.generativeai as genai
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.prompts import PromptTemplate
 from dotenv import load_dotenv
 from streamlit_option_menu import option_menu
 from langchain_community.document_loaders import PyPDFLoader, UnstructuredWordDocumentLoader, UnstructuredExcelLoader
@@ -13,7 +12,6 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.chains import create_retrieval_chain
 from langchain_core.prompts import ChatPromptTemplate
 import pandas as pd
-from datetime import datetime
 import re
 
 load_dotenv()
@@ -257,6 +255,7 @@ def handleCheck(llm_model, vector_store):
             print("response[]", response["answer"])
             return results
         except Exception as e:
+            print("Exception", e)
             return f"Lỗi khi thực hiện kiểm tra: {str(e)}"
     else:
         return "Không có dữ liệu tải lên để thực hiện kiểm tra. Vui lòng tải lên tài liệu trước."
